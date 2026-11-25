@@ -1,4 +1,7 @@
 require("dotenv").config();
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
 const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
@@ -15,9 +18,20 @@ cloudinary.config({
   api_secret: (process.env.CLOUDINARY_API_SECRET || "").trim()
 });
 
+const uploadDir = path.join(os.tmpdir(), "biblioteca_uploads");
+fs.mkdirSync(uploadDir, { recursive: true });
+
+const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024;
+
 const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 }
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, uploadDir),
+    filename: (req, file, cb) => {
+      const safeOriginal = (file.originalname || "archivo.pdf").replace(/[^a-zA-Z0-9._-]/g, "_");
+      cb(null, `${Date.now()}_${safeOriginal}`);
+    }
+  }),
+  limits: { fileSize: MAX_FILE_SIZE_BYTES }
 });
 
 const libroSchema = new mongoose.Schema(
@@ -37,21 +51,28 @@ const libroSchema = new mongoose.Schema(
 
 const Libro = mongoose.model("Libro", libroSchema);
 
-function subirPdfACloudinary(buffer, nombreBase) {
+function subirPdfGrandeACloudinary(filePath, nombreBase) {
+  const publicId = `${Date.now()}_${nombreBase.replace(/[^a-zA-Z0-9_-]/g, "_")}.pdf`;
   return new Promise((resolve, reject) => {
-    const stream = cloudinary.uploader.upload_stream(
+    cloudinary.uploader.upload_large(
+      filePath,
       {
         folder: "biblioteca_digital/pdfs",
         resource_type: "raw",
-        public_id: `${Date.now()}_${nombreBase.replace(/[^a-zA-Z0-9_-]/g, "_")}.pdf`
+        public_id: publicId,
+        chunk_size: 6 * 1024 * 1024
       },
       (error, result) => {
         if (error) return reject(error);
         resolve(result);
       }
     );
-    stream.end(buffer);
   });
+}
+
+function eliminarArchivoTemporal(filePath) {
+  if (!filePath) return;
+  fs.unlink(filePath, () => {});
 }
 
 app.get("/", (req, res) => {
@@ -68,7 +89,24 @@ app.get("/libros", async (req, res) => {
   }
 });
 
-app.post("/libros", upload.single("pdf"), async (req, res) => {
+app.post("/libros", (req, res, next) => {
+  upload.single("pdf")(req, res, (err) => {
+    if (err instanceof multer.MulterError) {
+      if (err.code === "LIMIT_FILE_SIZE") {
+        return res.status(413).json({
+          ok: false,
+          error: `El archivo excede el límite máximo permitido (${Math.round(MAX_FILE_SIZE_BYTES / (1024 * 1024))} MB)`
+        });
+      }
+      return res.status(400).json({ ok: false, error: err.message });
+    }
+    if (err) {
+      return res.status(500).json({ ok: false, error: "Error al recibir el archivo" });
+    }
+    next();
+  });
+}, async (req, res) => {
+  const rutaTemporal = req.file ? req.file.path : null;
   try {
     if (!req.file) {
       return res.status(400).json({ ok: false, error: "Debes adjuntar un archivo PDF en el campo 'pdf'" });
@@ -83,7 +121,7 @@ app.post("/libros", upload.single("pdf"), async (req, res) => {
     const paginasNum = Number(req.body.paginas) > 0 ? Number(req.body.paginas) : 1;
     const colorArgb = req.body.portadaColorArgb ? Number(req.body.portadaColorArgb) : -4696968;
 
-    const resultadoCloud = await subirPdfACloudinary(req.file.buffer, tituloLimpio);
+    const resultadoCloud = await subirPdfGrandeACloudinary(rutaTemporal, tituloLimpio);
 
     const nuevoLibro = await Libro.create({
       titulo: tituloLimpio,
@@ -97,8 +135,10 @@ app.post("/libros", upload.single("pdf"), async (req, res) => {
       cloudinaryPublicId: resultadoCloud.public_id
     });
 
+    eliminarArchivoTemporal(rutaTemporal);
     return res.status(201).json({ ok: true, libro: nuevoLibro });
   } catch (error) {
+    eliminarArchivoTemporal(rutaTemporal);
     console.error("Error subiendo libro:", error);
     return res.status(500).json({ ok: false, error: "No se pudo guardar el libro en la nube" });
   }
