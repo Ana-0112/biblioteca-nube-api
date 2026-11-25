@@ -1,19 +1,21 @@
 {
   "name": "biblioteca-nube-api",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "API para Biblioteca Digital en la nube con MongoDB Atlas y Cloudinary",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "cloudinary": "^2.5.1",
     "cors": "^2.8.6",
     "dotenv": "^18.0.10",
     "express": "^5.3.0",
-    "nodemailer": "^10.6.1"
+    "mongoose": "^8.9.5",
+    "multer": "^1.4.5-lts.1"
   }
 }
